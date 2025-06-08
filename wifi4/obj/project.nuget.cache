@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "dgSpecHash": "YW+jDL4B4NI=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\TALHA\\Documents\\GitHub\\wifiv2\\wifi4\\wifi4.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\TALHA\\.nuget\\packages\\packetdotnet\\1.4.6\\packetdotnet.1.4.6.nupkg.sha512",
+    "C:\\Users\\TALHA\\.nuget\\packages\\sharppcap\\6.2.2\\sharppcap.6.2.2.nupkg.sha512",
+    "C:\\Users\\TALHA\\.nuget\\packages\\system.memory\\4.5.5\\system.memory.4.5.5.nupkg.sha512",
+    "C:\\Users\\TALHA\\.nuget\\packages\\system.runtime.compilerservices.unsafe\\6.0.0\\system.runtime.compilerservices.unsafe.6.0.0.nupkg.sha512",
+    "C:\\Users\\TALHA\\.nuget\\packages\\system.text.encoding.codepages\\6.0.0\\system.text.encoding.codepages.6.0.0.nupkg.sha512"
+  ],
+  "logs": []
+}
