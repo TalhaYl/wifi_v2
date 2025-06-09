@@ -40,6 +40,7 @@ namespace wifi4
 
     public partial class ConnectedDevicesForm : Form
     {
+        #region Fields and Properties
         private Dictionary<string, string> customDeviceNames = new Dictionary<string, string>();
         private string customNamesFilePath;
         private int deviceCount = 0;
@@ -52,41 +53,41 @@ namespace wifi4
         private EnhancedMacLookup macLookup; // Yeni MAC lookup sınıfı
         private Dictionary<string, string> macVendorCache = new Dictionary<string, string>();
         private string macVendorCacheFile = "mac_vendors.txt";
+        private bool isScanning = false;
+        private CancellationTokenSource scanCancellationSource;
+        #endregion
 
+        #region Constructor and Initialization
         public ConnectedDevicesForm()
         {
             InitializeComponent();
-            
+
+            // Buton özelliklerini ayarla
+            btnScan.FlatStyle = FlatStyle.Flat;
+            btnScan.FlatAppearance.BorderSize = 0;
+            btnScan.Size = new Size(50, 50);
+            btnScan.BackColor = Color.Transparent;
+            btnScan.BackgroundImageLayout = ImageLayout.Center;
+
+            btnBack.FlatStyle = FlatStyle.Flat;
+            btnBack.FlatAppearance.BorderSize = 0;
+            btnBack.Size = new Size(50, 50);
+            btnBack.BackColor = Color.Transparent;
+            btnBack.BackgroundImageLayout = ImageLayout.Center;
+
             string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             string dir = Path.Combine(appData, "wifi4");
             Directory.CreateDirectory(dir);
             customNamesFilePath = Path.Combine(dir, "custom_device_names.txt");
-            
+
             LoadCustomDeviceNames();
             LoadMacVendorCache();
             SetHoverBorder(btnScan);
             SetHoverBorder(btnBack);
 
             // Buton resimlerini yükle
-            try
-            {
-                string resourcesPath = Path.Combine(Application.StartupPath, "Resources");
-                if (Directory.Exists(resourcesPath))
-                {
-                    string scanIconPath = Path.Combine(resourcesPath, "icons8_multiple_devices_50.png");
-                    string backIconPath = Path.Combine(resourcesPath, "icons8_home_50.png");
+            LoadResources();
 
-                    if (File.Exists(scanIconPath))
-                        btnScan.BackgroundImage = Image.FromFile(scanIconPath);
-                    if (File.Exists(backIconPath))
-                        btnBack.BackgroundImage = Image.FromFile(backIconPath);
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Buton resimleri yüklenirken hata oluştu: " + ex.Message);
-            }
-            
             // MAC lookup sınıfını başlat
             macLookup = new EnhancedMacLookup();
 
@@ -144,39 +145,53 @@ namespace wifi4
 
         private void ShowLoadingSpinner()
         {
-            loadingSpinner.Visible = true;
-            loadingSpinner.Location = new Point((this.Width - loadingSpinner.Width) / 2, (this.Height - loadingSpinner.Height) / 2);
-            loadingSpinner.BringToFront();
+            if (loadingSpinner != null)
+            {
+                loadingSpinner.Visible = true;
+                loadingSpinner.Location = new Point((this.Width - loadingSpinner.Width) / 2, (this.Height - loadingSpinner.Height) / 2);
+                loadingSpinner.BringToFront();
+            }
         }
 
         private void HideLoadingSpinner()
         {
-            loadingSpinner.Visible = false;
+            if (loadingSpinner != null)
+            {
+                loadingSpinner.Visible = false;
+            }
         }
 
         private void ShowCountSpinner()
         {
-            countSpinner.Visible = true;
-            countSpinner.Location = new Point(labelCount.Right + 10, labelCount.Top + 2);
-            countSpinner.BringToFront();
+            if (countSpinner != null)
+            {
+                countSpinner.Visible = true;
+                countSpinner.Location = new Point(labelCount.Right + 10, labelCount.Top + 2);
+                countSpinner.BringToFront();
+            }
         }
 
         private void HideCountSpinner()
         {
-            countSpinner.Visible = false;
+            if (countSpinner != null)
+            {
+                countSpinner.Visible = false;
+            }
         }
         private void SetHoverBorder(Button button)
         {
             button.MouseEnter += (s, e) =>
             {
                 button.FlatAppearance.BorderSize = 2;
-                button.FlatAppearance.BorderColor = Color.SteelBlue; // İstediğin rengi kullanabilirsin
+                button.FlatAppearance.BorderColor = Color.SteelBlue;
+                button.BackColor = Color.FromArgb(240, 240, 240);
             };
 
             button.MouseLeave += (s, e) =>
             {
                 button.FlatAppearance.BorderSize = 0;
                 button.FlatAppearance.BorderColor = this.BackColor;
+                button.BackColor = Color.Transparent;
             };
         }
 
@@ -187,7 +202,7 @@ namespace wifi4
                 NetworkInterface[] interfaces = NetworkInterface.GetAllNetworkInterfaces();
                 foreach (NetworkInterface ni in interfaces)
                 {
-                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 && 
+                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 &&
                         ni.OperationalStatus == OperationalStatus.Up)
                     {
                         IPInterfaceProperties ipProps = ni.GetIPProperties();
@@ -210,64 +225,14 @@ namespace wifi4
 
         private async void btnScan_Click(object sender, EventArgs e)
         {
-            if (!IsConnectedToWiFi())
+            if (isScanning)
             {
-                MessageBox.Show("WiFi ağına bağlı değilsiniz! Lütfen önce bir WiFi ağına bağlanın.", 
-                    "Bağlantı Hatası", 
-                    MessageBoxButtons.OK, 
-                    MessageBoxIcon.Warning);
+                StopScan();
                 return;
             }
 
-            flowDevices.Controls.Clear();
-            ShowLoadingSpinner();
-            ShowCountSpinner();
-            labelCount.Text = "Bulunan Cihaz Sayısı: ";
-            deviceCount = 0;
-
-            btnScan.Enabled = false;
-            btnBack.Enabled = false;
-
-            try
-            {
-                // 1. Önce ARP tablosunu oku - bu çok hızlı
-                var arpDevices = await GetArpTableAsync();
-                var seenMacs = new HashSet<string>();
-
-                // 2. ARP tablosundan gelen cihazları işle
-                allDevices.Clear();
-                var arpTasks = new List<Task>();
-
-                foreach (var (ip, mac) in arpDevices)
-                {
-                    if (string.IsNullOrWhiteSpace(mac) || seenMacs.Contains(mac))
-                        continue;
-                    seenMacs.Add(mac);
-
-                    // Her cihaz için ayrı task oluştur - paralel işlem
-                    arpTasks.Add(ProcessDeviceAsync(ip, mac));
-                }
-
-                // 3. ARP cihazlarını paralel işle
-                await Task.WhenAll(arpTasks);
-
-                // 4. Her zaman ping taraması yap
-                await PerformAdditionalPingScan(seenMacs);
-
-                labelCount.Text = $"Bulunan cihaz sayısı: {deviceCount}";
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Hata: " + ex.Message);
-            }
-            finally
-            {
-                if (deviceCount == 0)
-                    HideLoadingSpinner();
-                HideCountSpinner();
-                btnScan.Enabled = true;
-                btnBack.Enabled = true;
-            }
+            StartScan();
+            await ScanNetworkAsync();
         }
 
         private void UpdateCurrentNetworkInfo()
@@ -276,7 +241,7 @@ namespace wifi4
             {
                 string output = RunCommand("netsh", "wlan show interfaces");
                 string[] lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                
+
                 foreach (string line in lines)
                 {
                     if (line.Contains("SSID") && !line.Contains("BSSID"))
@@ -304,12 +269,12 @@ namespace wifi4
                 var arpDevices = new List<(string ip, string mac)>();
                 string arpOutput = RunCommand("arp", "-a");
                 string[] arpLines = arpOutput.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                
+
                 // Mevcut WiFi ağının IP aralığını al
                 string localIp = GetLocalIPAddress();
                 string[] ipParts = localIp.Split('.');
                 string networkPrefix = $"{ipParts[0]}.{ipParts[1]}.{ipParts[2]}.";
-                
+
                 foreach (string line in arpLines)
                 {
                     var match = Regex.Match(line, @"(?<ip>\d+\.\d+\.\d+\.\d+)\s+([\-\w]+)?\s+(?<mac>([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})");
@@ -324,7 +289,7 @@ namespace wifi4
                         }
                     }
                 }
-                
+
                 return arpDevices;
             });
         }
@@ -346,7 +311,7 @@ namespace wifi4
                 string vendor = "Bilinmeyen Üretici";
                 string hostname = "Çözümlenemedi";
                 string deviceType = "Bilinmeyen Cihaz";
-                
+
                 // Hostname çözümleme
                 try
                 {
@@ -369,14 +334,14 @@ namespace wifi4
                     var detailedDeviceInfo = await macLookup.GetDetailedDeviceInfoAsync(mac);
                     vendor = detailedDeviceInfo.CompanyName;
                     deviceType = detailedDeviceInfo.DeviceCategory;
-                    
+
                     // Cache'e ekle
                     macVendorCache[mac] = vendor;
                     SaveMacVendorCache();
                 }
 
                 string connectionType = GetConnectionType(ip);
-                
+
                 // Eğer deviceType hala bilinmiyorsa, tekrar kontrol et
                 if (deviceType == "Bilinmeyen Cihaz")
                 {
@@ -385,7 +350,7 @@ namespace wifi4
                 }
 
                 var deviceTuple = (ip, mac, hostname, vendor, connectionType, deviceType);
-                
+
                 lock (allDevices)
                 {
                     allDevices.Add(deviceTuple);
@@ -400,8 +365,7 @@ namespace wifi4
                         deviceCount++;
                         if (deviceCount == 1)
                             HideLoadingSpinner();
-                        countSpinner.Location = new Point(labelCount.Right + 10, labelCount.Top + 2);
-                        labelCount.Text = $"Toplam cihaz sayısı: {deviceCount}";
+                        labelCount.Text = $"Taranan cihaz sayısı: {deviceCount}";
                     });
                 }
             }
@@ -416,7 +380,7 @@ namespace wifi4
         {
             string localIp = GetLocalIPAddress();
             string baseIp = string.Join(".", localIp.Split('.').Take(3)) + ".";
-            
+
             var pingTasks = new List<Task>();
 
             for (int i = 1; i <= 254; i++)
@@ -440,7 +404,7 @@ namespace wifi4
                     {
                         // ARP tablosunu tekrar kontrol et
                         await Task.Delay(100); // ARP tablosunun güncellenmesi için kısa bekleme
-                        
+
                         string arpOutput = RunCommand("arp", $"-a {ip}");
                         var match = System.Text.RegularExpressions.Regex.Match(arpOutput, @"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}");
                         if (match.Success)
@@ -478,7 +442,7 @@ namespace wifi4
                     {
                         vendorLabel.Text = $"🏭 Üretici: {vendor}";
                     }
-                    
+
                     // Device type'ı da güncelle
                     var deviceInfo = await GetDetailedDeviceInfoFromMacAsync(mac);
                     string newDeviceType = GetDeviceType(vendor, deviceInfo);
@@ -487,7 +451,7 @@ namespace wifi4
                     {
                         typeLabel.Text = newDeviceType;
                     }
-                    
+
                     var iconLabel = panel.Controls.OfType<Label>().FirstOrDefault(l => l.Font.Name == "Segoe UI Symbol");
                     if (iconLabel != null)
                     {
@@ -504,7 +468,7 @@ namespace wifi4
             {
                 // MAC adresinin ilk 6 karakterini al (OUI - Organizationally Unique Identifier)
                 string oui = mac.Substring(0, 8).Replace("-", "").ToUpper();
-                
+
                 // Önce cache'den kontrol et
                 if (macVendorCache.ContainsKey(oui))
                 {
@@ -626,7 +590,7 @@ namespace wifi4
                     "wifi4",
                     macVendorCacheFile
                 );
-                
+
                 Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
                 File.WriteAllLines(
                     cachePath,
@@ -861,9 +825,9 @@ namespace wifi4
                 try
                 {
                     var deviceInfo = await macLookup.GetDetailedDeviceInfoAsync(mac);
-                    MessageBox.Show(macLookup.GenerateDetailedReport(deviceInfo), 
-                        "Cihaz Detayları", 
-                        MessageBoxButtons.OK, 
+                    MessageBox.Show(macLookup.GenerateDetailedReport(deviceInfo),
+                        "Cihaz Detayları",
+                        MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
@@ -905,7 +869,7 @@ namespace wifi4
                 case "OPPO/Vivo Cihazı": return "📱";
                 case "OnePlus Cihazı": return "📱";
                 case "Google Pixel": return "📱";
-                
+
                 // Bilgisayarlar
                 case "Microsoft Surface": return "💻";
                 case "Windows Bilgisayar": return "💻";
@@ -918,7 +882,7 @@ namespace wifi4
                 case "ASUS ZenBook": return "💻";
                 case "Acer Bilgisayar": return "💻";
                 case "MSI Bilgisayar": return "💻";
-                
+
                 // Ağ Cihazları
                 case "Cisco Router": return "🌐";
                 case "Netgear Router": return "🌐";
@@ -929,14 +893,14 @@ namespace wifi4
                 case "ZTE Router": return "🌐";
                 case "Router": return "🌐";
                 case "Modem": return "🌐";
-                
+
                 // Yazıcılar
                 case "HP Yazıcı": return "🖨️";
                 case "Canon Yazıcı": return "🖨️";
                 case "Epson Yazıcı": return "🖨️";
                 case "Brother Yazıcı": return "🖨️";
                 case "Yazıcı": return "🖨️";
-                
+
                 // TV ve Medya Cihazları
                 case "Samsung TV": return "📺";
                 case "LG TV": return "📺";
@@ -946,29 +910,34 @@ namespace wifi4
                 case "Roku Cihazı": return "📺";
                 case "Chromecast": return "📺";
                 case "Amazon Fire TV": return "📺";
-                
+
                 // Oyun Konsolları
                 case "PlayStation": return "🎮";
                 case "Xbox": return "🎮";
                 case "Nintendo": return "🎮";
-                
+
                 // Akıllı Ev Cihazları
                 case "Google Nest": return "🏠";
                 case "Ring Cihazı": return "🏠";
                 case "Philips Hue": return "💡";
                 case "Amazon Echo": return "🔊";
-                
+
                 // Donanım Üreticileri
                 case "Intel Cihazı": return "💻";
                 case "AMD Cihazı": return "💻";
                 case "NVIDIA Cihazı": return "💻";
-                
+
                 default: return "❓";
             }
         }
 
         private void btnBack_Click(object sender, EventArgs e)
         {
+            if (isScanning)
+            {
+                StopScan();
+            }
+
             foreach (Form form in Application.OpenForms)
             {
                 if (form is MainMenuForm)
@@ -984,6 +953,12 @@ namespace wifi4
         {
             if (e.CloseReason == CloseReason.UserClosing)
             {
+                if (isScanning)
+                {
+                    StopScan();
+                }
+
+                // Ana menü formunu bul ve göster
                 foreach (Form form in Application.OpenForms)
                 {
                     if (form is MainMenuForm)
@@ -992,6 +967,9 @@ namespace wifi4
                         break;
                     }
                 }
+
+                // Formu tamamen kapat
+                this.Dispose();
             }
             base.OnFormClosing(e);
         }
@@ -1067,6 +1045,149 @@ namespace wifi4
                 }
             }
         }
+
+        private void StartScan()
+        {
+            isScanning = true;
+            scanCancellationSource = new CancellationTokenSource();
+            btnScan.Text = "Durdur";
+            ShowLoadingSpinner();
+            flowDevices.Controls.Clear();
+            allDevices.Clear();
+            deviceCount = 0;
+            labelCount.Text = "Taranan cihaz sayısı: 0";
+            ShowCountSpinner();
+        }
+
+        private void StopScan()
+        {
+            isScanning = false;
+            scanCancellationSource?.Cancel();
+            btnScan.Text = "Tara";
+            HideLoadingSpinner();
+            HideCountSpinner();
+            labelCount.Text = $"Toplam cihaz sayısı: {deviceCount}";
+        }
+
+        private async Task ScanNetworkAsync()
+        {
+            try
+            {
+                var localIP = GetLocalIPAddress();
+                if (string.IsNullOrEmpty(localIP))
+                {
+                    MessageBox.Show("Yerel IP adresi bulunamadı!");
+                    return;
+                }
+
+                var baseIP = localIP.Substring(0, localIP.LastIndexOf('.') + 1);
+                var tasks = new List<Task>();
+
+                for (int i = 1; i <= 254; i++)
+                {
+                    if (scanCancellationSource.Token.IsCancellationRequested)
+                        break;
+
+                    string ip = baseIP + i.ToString();
+                    tasks.Add(ScanIPAsync(ip));
+
+                    if (tasks.Count >= 10)
+                    {
+                        await Task.WhenAny(tasks);
+                        tasks.RemoveAll(t => t.IsCompleted);
+                    }
+                }
+
+                await Task.WhenAll(tasks);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Tarama sırasında hata oluştu: {ex.Message}");
+            }
+            finally
+            {
+                StopScan();
+            }
+        }
+
+        private async Task ScanIPAsync(string ip)
+        {
+            try
+            {
+                using (var ping = new Ping())
+                {
+                    var reply = await ping.SendPingAsync(ip, 1000);
+                    if (reply.Status == IPStatus.Success)
+                    {
+                        var mac = GetMacAddress(ip);
+                        if (!string.IsNullOrEmpty(mac))
+                        {
+                            await ProcessDeviceAsync(ip, mac);
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private string GetMacAddress(string ip)
+        {
+            try
+            {
+                var macAddr = new byte[6];
+                var destIP = BitConverter.ToInt32(IPAddress.Parse(ip).GetAddressBytes(), 0);
+
+                SendARP(destIP, 0, macAddr, new int[] { 6 });
+                return BitConverter.ToString(macAddr).Replace("-", ":");
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("iphlpapi.dll", ExactSpelling = true)]
+        private static extern int SendARP(int destIP, int srcIP, byte[] macAddr, int[] physicalAddrLen);
+
+        private void LoadResources()
+        {
+            try
+            {
+                // Buton resimlerini yükle
+                btnScan.BackgroundImage = Image.FromFile(@"C:\Users\TALHA\Documents\GitHub\wifiv2\wifi4\Resources\icons8-multiple-devices-50.png");
+                btnScan.BackgroundImageLayout = ImageLayout.Center;
+                btnScan.FlatStyle = FlatStyle.Flat;
+                btnScan.FlatAppearance.BorderSize = 0;
+                btnScan.Size = new Size(50, 50);
+                btnScan.BackColor = Color.Transparent;
+
+                btnBack.BackgroundImage = Image.FromFile(@"C:\Users\TALHA\Documents\GitHub\wifiv2\wifi4\Resources\icons8-home-page-50.png");
+                btnBack.BackgroundImageLayout = ImageLayout.Center;
+                btnBack.FlatStyle = FlatStyle.Flat;
+                btnBack.FlatAppearance.BorderSize = 0;
+                btnBack.Size = new Size(50, 50);
+                btnBack.BackColor = Color.Transparent;
+
+                // Loading animasyonunu yükle
+                string loadingPath = @"C:\Users\TALHA\Documents\GitHub\wifiv2\wifi4\Resources\g2.gif";
+                if (File.Exists(loadingPath))
+                {
+                    loadingSpinner.Image = Image.FromFile(loadingPath);
+                    loadingSpinner.SizeMode = PictureBoxSizeMode.Zoom;
+                    loadingSpinner.Size = new Size(100, 100);
+                    loadingSpinner.Visible = false;
+
+                    countSpinner.Image = Image.FromFile(loadingPath);
+                    countSpinner.SizeMode = PictureBoxSizeMode.Zoom;
+                    countSpinner.Size = new Size(20, 20);
+                    countSpinner.Visible = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Kaynak dosyaları yüklenirken hata oluştu: " + ex.Message);
+            }
+        }
     }
 
     public class EnhancedMacLookup
@@ -1114,7 +1235,7 @@ namespace wifi4
                 string oui = normalizedMac.Substring(0, 8).Replace("-", "").ToUpper();
 
                 // Cache kontrolü
-                if (deviceCache.ContainsKey(oui) && 
+                if (deviceCache.ContainsKey(oui) &&
                     (DateTime.Now - deviceCache[oui].LastUpdated).TotalDays < 7)
                 {
                     return ConvertToDetailedInfo(deviceCache[oui]);
@@ -1163,12 +1284,12 @@ namespace wifi4
                     client.Timeout = TimeSpan.FromSeconds(3);
                     string url = $"https://api.macvendors.com/{oui}";
                     string vendor = await client.GetStringAsync(url);
-                    
+
                     if (!string.IsNullOrWhiteSpace(vendor))
                     {
                         detailedInfo.CompanyName = CleanVendorName(vendor);
                     }
-                    
+
                     // Rate limiting için bekle
                     await Task.Delay(100);
                 }
@@ -1185,7 +1306,7 @@ namespace wifi4
                     client.Timeout = TimeSpan.FromSeconds(5);
                     // Ücretsiz API key - günlük 1000 sorgu limiti
                     string url = $"https://api.macaddress.io/v1?apiKey=at_8Qpuw07fVV1S1b3fuR7JfZf1ZXp5a&output=json&search={macAddress}";
-                    
+
                     var response = await client.GetStringAsync(url);
                     var json = JsonDocument.Parse(response);
                     var root = json.RootElement;
@@ -1194,10 +1315,10 @@ namespace wifi4
                     {
                         if (vendorDetails.TryGetProperty("companyName", out var companyName))
                             detailedInfo.CompanyName = companyName.GetString() ?? detailedInfo.CompanyName;
-                        
+
                         if (vendorDetails.TryGetProperty("companyAddress", out var address))
                             detailedInfo.CompanyAddress = address.GetString() ?? "";
-                        
+
                         if (vendorDetails.TryGetProperty("countryCode", out var country))
                             detailedInfo.CountryCode = country.GetString() ?? "";
                     }
@@ -1235,7 +1356,7 @@ namespace wifi4
                 {
                     client.Timeout = TimeSpan.FromSeconds(3);
                     string url = $"http://standards-oui.ieee.org/oui/oui.txt";
-                    
+
                     // Bu büyük bir dosya, cache'lenmeli
                     // Alternatif olarak sadece OUI lookup yapabiliriz
                     string lookupUrl = $"https://www.wireshark.org/tools/oui-lookup.html";
@@ -1253,10 +1374,10 @@ namespace wifi4
                 {
                     client.Timeout = TimeSpan.FromSeconds(3);
                     string url = $"https://maclookup.app/api/v2/macs/{oui}";
-                    
+
                     var response = await client.GetStringAsync(url);
                     var json = JsonDocument.Parse(response);
-                    
+
                     if (json.RootElement.TryGetProperty("company", out var company))
                     {
                         var companyName = company.GetString();
@@ -1372,7 +1493,7 @@ namespace wifi4
             string deviceType = detailedInfo.DeviceType.ToLower();
 
             // Sanal makine kontrolü
-            if (vendor.Contains("vmware") || vendor.Contains("virtualbox") || 
+            if (vendor.Contains("vmware") || vendor.Contains("virtualbox") ||
                 vendor.Contains("hyper-v") || vendor.Contains("parallels") ||
                 deviceType.Contains("virtual"))
             {
@@ -1405,7 +1526,7 @@ namespace wifi4
                 }
                 else
                 {
-                    detailedInfo.PossibleDevices.AddRange(new[] 
+                    detailedInfo.PossibleDevices.AddRange(new[]
                     { "iPhone", "iPad", "MacBook", "iMac", "Mac mini", "Apple TV", "AirPods" });
                 }
             }
@@ -1419,7 +1540,7 @@ namespace wifi4
                     detailedInfo.IsMobile = true;
                     detailedInfo.DeviceCategory = "Samsung Galaxy";
                     detailedInfo.OperatingSystem = "Android";
-                    detailedInfo.PossibleDevices.AddRange(new[] 
+                    detailedInfo.PossibleDevices.AddRange(new[]
                     { "Galaxy S Series", "Galaxy Note", "Galaxy A Series", "Galaxy M Series" });
                 }
                 else if (deviceType.Contains("tv"))
@@ -1429,7 +1550,7 @@ namespace wifi4
                 }
                 else
                 {
-                    detailedInfo.PossibleDevices.AddRange(new[] 
+                    detailedInfo.PossibleDevices.AddRange(new[]
                     { "Galaxy Phone", "Galaxy Tablet", "Smart TV", "Galaxy Watch", "Galaxy Buds" });
                 }
             }
@@ -1509,7 +1630,7 @@ namespace wifi4
             }
 
             // Network cihazları
-            else if (vendor.Contains("tp-link") || vendor.Contains("netgear") || 
+            else if (vendor.Contains("tp-link") || vendor.Contains("netgear") ||
                      vendor.Contains("d-link") || vendor.Contains("cisco"))
             {
                 detailedInfo.IsNetworkDevice = true;
@@ -1544,7 +1665,7 @@ namespace wifi4
         {
             // Vendor ismini temizle ve standardize et
             vendor = vendor.Trim();
-            
+
             // Yaygın eklentileri kaldır
             vendor = vendor.Replace(" Inc.", "")
                           .Replace(" Ltd.", "")
@@ -1613,20 +1734,20 @@ namespace wifi4
         public string GenerateDetailedReport(DetailedDeviceInfo deviceInfo)
         {
             var report = new StringBuilder();
-            
+
             report.AppendLine("=== DETAYLI CİHAZ BİLGİSİ ===");
             report.AppendLine($"🏭 Üretici: {deviceInfo.CompanyName}");
             report.AppendLine($"📱 Cihaz Tipi: {deviceInfo.DeviceCategory}");
-            
+
             if (!string.IsNullOrEmpty(deviceInfo.SpecificModel))
                 report.AppendLine($"🔧 Model: {deviceInfo.SpecificModel}");
-            
+
             if (!string.IsNullOrEmpty(deviceInfo.OperatingSystem))
                 report.AppendLine($"💻 İşletim Sistemi: {deviceInfo.OperatingSystem}");
-            
+
             report.AppendLine($"🌍 Ülke: {deviceInfo.CountryCode}");
             report.AppendLine($"📍 Adres: {deviceInfo.CompanyAddress}");
-            
+
             // Cihaz özellikleri
             report.AppendLine("\n=== CİHAZ ÖZELLİKLERİ ===");
             report.AppendLine($"📱 Mobil Cihaz: {(deviceInfo.IsMobile ? "Evet" : "Hayır")}");
@@ -1635,7 +1756,7 @@ namespace wifi4
             report.AppendLine($"🖥️ Sanal Makine: {(deviceInfo.IsVirtualMachine ? "Evet" : "Hayır")}");
             report.AppendLine($"🍎 Apple Cihazı: {(deviceInfo.IsAppleDevice ? "Evet" : "Hayır")}");
             report.AppendLine($"📱 Samsung Cihazı: {(deviceInfo.IsSamsungDevice ? "Evet" : "Hayır")}");
-            
+
             // Olası cihazlar
             if (deviceInfo.PossibleDevices.Any())
             {
@@ -1645,7 +1766,7 @@ namespace wifi4
                     report.AppendLine($"• {device}");
                 }
             }
-            
+
             // Teknik özellikler
             if (deviceInfo.TechnicalSpecs.Any())
             {
@@ -1655,11 +1776,14 @@ namespace wifi4
                     report.AppendLine($"• {spec}");
                 }
             }
-            
+
             report.AppendLine($"\n🔍 OUI: {deviceInfo.OUI}");
             report.AppendLine($"🕐 Son Güncelleme: {deviceInfo.LastUpdated:dd.MM.yyyy HH:mm}");
-            
+
             return report.ToString();
         }
     }
 }
+
+// Add this line to close the last #region block in the file
+#endregion
